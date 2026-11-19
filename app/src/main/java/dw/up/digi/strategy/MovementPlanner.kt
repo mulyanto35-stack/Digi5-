@@ -26,7 +26,6 @@ object MovementPlanner {
     /**
      * Dash = maju 3 sel ke kanan + hancurkan SEMUA piramida di jalur +
      * ambil SEMUA item di jalur (termasuk drop dari piramida yang hancur).
-     * Ini aksi paling efisien di game: 1 tap menggantikan 3 move + N attack.
      */
     private const val DASH_RANGE = 3
 
@@ -37,10 +36,11 @@ object MovementPlanner {
     private const val RIGHT_EDGE_COL = 5
 
     /**
-     * Dash dipakai jika ada >= 1 piramida di jalur 3 sel kanan.
-     * Bahkan 1 piramida = untung besar (1 tap vs 1 attack + 1 move).
+     * Dash HANYA dipakai jika ada minimal 2 piramida di jalur 3 sel kanan.
+     * Pola seperti [c][p][ ][p] atau [c][p][p][p] layak dash.
+     * Pola [c][p][ ][ ] (1 piramida) -> jangan dash, hemat charge.
      */
-    private const val DASH_PYRAMIDS_MIN = 1
+    private const val DASH_PYRAMIDS_MIN = 2
 
     /**
      * Attack TIDAK memajukan posisi. Cost di pathfinding = 2
@@ -109,8 +109,7 @@ object MovementPlanner {
         val pyramidCount: Int,
         val itemCount: Int,
         val landingFree: Boolean,
-        val landingItem: Boolean,
-        val totalValue: Int
+        val landingItem: Boolean
     )
 
     // ============================================================
@@ -152,41 +151,20 @@ object MovementPlanner {
         }
 
         // ---------------------------------------------------------
-        // 2. DASH PRIORITAS TERTINGGI
-        //    Dash = maju 3 + hancurkan semua piramida di jalur +
-        //    ambil semua item (termasuk drop). Bahkan 1 piramida
-        //    di jalur sudah untung besar.
+        // 2. DASH KONSERVATIF
+        //    Hanya jika:
+        //      - Ada >= 2 piramida di 3 sel kanan (pola [c][p][ ][p] dll)
+        //      - TIDAK ada energy orange terlihat (energi tetap prioritas)
+        //      - Charge dash > reserve
         // ---------------------------------------------------------
-        if (dashAvailable && dashCharges > DASH_RESERVE) {
+        if (dashAvailable && dashCharges > DASH_RESERVE && !energyVisible) {
             val dash = dashAnalysis(player, cells)
 
-            val shouldDash = when {
-                // >= 2 piramida: SELALU dash (hancurkan semuanya)
-                dash.pyramidCount >= 2 -> true
-
-                // 1 piramida: dash (hancur 1, maju 3, mungkin drop item)
-                dash.pyramidCount >= DASH_PYRAMIDS_MIN -> true
-
-                // 0 piramida tapi ada item di jalur & tidak ada energy terlihat:
-                // dash ambil item jauh dalam 1 tap
-                dash.itemCount > 0 && !energyVisible -> true
-
-                // 0 piramida tapi landing ada item
-                dash.landingItem && !energyVisible -> true
-
-                else -> false
-            }
-
-            if (shouldDash) {
+            if (dash.pyramidCount >= DASH_PYRAMIDS_MIN) {
                 val target = Cell(player.row, minOf(RIGHT_EDGE_COL, player.col + DASH_RANGE))
                 val reason = buildString {
-                    append("Dash: ")
-                    if (dash.pyramidCount > 0) append("${dash.pyramidCount} piramida")
-                    if (dash.itemCount > 0) {
-                        if (dash.pyramidCount > 0) append(" + ")
-                        append("${dash.itemCount} item")
-                    }
-                    if (dash.pyramidCount == 0 && dash.itemCount == 0) append("maju 3")
+                    append("Dash: ${dash.pyramidCount} piramida di jalur")
+                    if (dash.itemCount > 0) append(" + ${dash.itemCount} item")
                 }
                 return Action(ActionKind.DASH, target, Direction.RIGHT, reason)
             }
@@ -217,8 +195,9 @@ object MovementPlanner {
 
         // ---------------------------------------------------------
         // 5. DASH DARURAT (tanpa claw, stuck total)
+        //    Tetap hormati energyVisible — jika energy terlihat, tunda dash.
         // ---------------------------------------------------------
-        if (dashAvailable && dashCharges > 0) {
+        if (dashAvailable && dashCharges > 0 && !energyVisible) {
             return Action(
                 ActionKind.DASH,
                 Cell(player.row, minOf(RIGHT_EDGE_COL, player.col + DASH_RANGE)),
@@ -247,7 +226,7 @@ object MovementPlanner {
             .filter { it.col <= RIGHT_EDGE_COL }
 
         if (path.isEmpty()) {
-            return DashInfo(0, 0, true, false, 0)
+            return DashInfo(0, 0, true, false)
         }
 
         val pyramids = path.count { cells[it]?.obstacle() == true }
@@ -257,10 +236,7 @@ object MovementPlanner {
         val landingFree = landingScore?.obstacle() != true
         val landingItem = (landingScore?.item ?: 0.0) > ITEM_SCORE
 
-        // Nilai dash: piramida = +30, item = +40, landing bebas = +10
-        val value = pyramids * 30 + items * 40 + (if (landingFree) 10 else 0)
-
-        return DashInfo(pyramids, items, landingFree, landingItem, value)
+        return DashInfo(pyramids, items, landingFree, landingItem)
     }
 
     // ============================================================
